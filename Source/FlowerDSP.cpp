@@ -7,13 +7,6 @@ namespace
 {
     inline float fastDbToGain (float db) noexcept { return std::exp (db * 0.11512925465f); }
     inline float powDb (float p) noexcept { return 10.0f * std::log10 (std::max (p, 1.0e-12f)); }
-
-    /** Asymmetric "tube" curve: unity slope at 0, even + odd harmonics. */
-    inline float tube (float u) noexcept
-    {
-        constexpr float b = 0.15f, t0 = 0.14888503f, d = 0.97783324f; // tanh(b), 1 - tanh(b)^2
-        return (std::tanh (u + b) - t0) / d;
-    }
 }
 
 constexpr float Unmask::kFreqs[Unmask::kBands];
@@ -86,7 +79,7 @@ void Unmask::analyse (const float* l, const float* r, int n, float openAmt, floa
             const float local = wsum > 0.0f ? lvl[(size_t) i] - acc / wsum : 0.0f;
             const float broad = lvl[(size_t) i] - mean;
 
-            const float overO = std::max (0.0f, local - 2.5f) + 0.5f * std::max (0.0f, broad - 4.0f);
+            const float overO = std::max (0.0f, local - 2.0f) + 0.5f * std::max (0.0f, broad - 4.0f);
             const float overH = std::max (0.0f, local - 1.5f) + 0.5f * std::max (0.0f, broad - 3.0f);
             over = overO;
 
@@ -94,9 +87,9 @@ void Unmask::analyse (const float* l, const float* r, int n, float openAmt, floa
             const float openW  = f < 1300.0f ? 1.0f : (f < 4000.0f ? 0.55f : 0.2f);
             const float harshW = f < 1800.0f ? 0.0f : (f < 2500.0f ? 0.5f : 1.0f);
 
-            const float cutO = std::min (overO * 1.0f, 6.0f * openW * openAmt);
+            const float cutO = std::min (overO * 1.3f, 6.0f * openW * openAmt);
             const float cutH = std::min (overH * 0.9f, 7.0f * harshW * harshAmt);
-            target = -std::min (9.0f, cutO + cutH);
+            target = -std::min (12.0f, cutO + cutH);
         }
         excessDb[(size_t) i] = over;
 
@@ -179,7 +172,7 @@ void Bloom::process (float* l, float* r, int n, float bloom) noexcept
             {
                 const float ratioDb = std::clamp (20.0f * std::log10 ((fa + 1.0e-6f) / (sl + 1.0e-6f)), -18.0f, 18.0f);
                 if (o > 0.0f)
-                    g += std::clamp (0.4f * o * ratioDb, -8.0f, 6.0f) * wT[b];
+                    g += std::clamp (0.4f * o * ratioDb, -12.0f, 9.0f) * wT[b];
                 if (dn > 0.0f)
                 {
                     g += -0.25f * dn * std::max (ratioDb, 0.0f) + 0.15f * dn * std::max (-ratioDb, 0.0f);
@@ -190,6 +183,7 @@ void Bloom::process (float* l, float* r, int n, float bloom) noexcept
                     const float down = -std::clamp (envDb - (ltDb + 1.0f), 0.0f, 12.0f) * 0.5f * dn;
                     g += (up + down) * wD[b];
                 }
+                g = std::clamp (g, -14.0f, 10.0f);
             }
             B.gDb = g < B.gDb ? g : g + (B.gDb - g) * smC; // gain reductions act instantly
             const float lin = fastDbToGain (B.gDb);
@@ -242,7 +236,7 @@ void LowEnd::process (float* mid, float* side, int n, float amt) noexcept
         float ml, mh, sl, sh;
         xm.split (mid[s], ml, mh);
         xs.split (side[s], sl, sh);
-        side[s] += eng * ((sh + (1.0f - amt) * sl) - side[s]);
+        side[s] += eng * ((sh + (1.0f - std::min (amt, 1.0f)) * sl) - side[s]);
 
         ml = punch.process (ml);
         const float p = env.push (ml);
@@ -419,85 +413,257 @@ void Shine::process (float* l, float* r, int n, float amt) noexcept
 }
 
 //==============================================================================
-// Sweet
+// Depth3D
 //==============================================================================
-void Sweet::prepare (double baseFs, int factor)
+void Depth3D::prepare (double sampleRate)
+{
+    fs = sampleRate;
+    hp.c = design::highpass (fs, 700.0, 0.7071);
+    // first-order all-pass decorrelator, corner frequencies spread across the mids/highs
+    const double fc[4] = { 900.0, 2300.0, 4700.0, 9000.0 };
+    for (int i = 0; i < 4; ++i)
+    {
+        const double t = std::tan (kPi * std::min (fc[i], fs * 0.45) / fs);
+        ap[i] = (float) ((t - 1.0) / (t + 1.0));
+    }
+    reset();
+}
+
+void Depth3D::reset()
+{
+    hp.reset(); shelf.reset(); shelf.c = BiquadCoeffs();
+    for (auto& v : z) v = 0.0f;
+    lastShelf = -1.0f;
+}
+
+void Depth3D::process (const float* mid, float* side, int n, float amt) noexcept
+{
+    const float shelfDb = 2.5f * amt;
+    if (std::abs (shelfDb - lastShelf) > 0.02f)
+    {
+        shelf.c = shelfDb < 0.01f ? BiquadCoeffs() : design::highShelf (fs, 3500.0, 0.8, shelfDb);
+        lastShelf = shelfDb;
+    }
+    const float k = 0.2f * amt;
+    for (int s = 0; s < n; ++s)
+    {
+        float x = hp.process (mid[s]);
+        for (int i = 0; i < 4; ++i)
+        {
+            const float y = ap[i] * x + z[i];
+            z[i] = x - ap[i] * y;
+            x = y;
+        }
+        side[s] = shelf.process (side[s] + k * x);
+    }
+}
+
+//==============================================================================
+// Analog
+//==============================================================================
+constexpr float Analog::tolDrive[2];
+constexpr float Analog::tolBias[2];
+constexpr float Analog::tolIron[2];
+constexpr float Analog::tolHf[2];
+
+namespace
+{
+    /** Rational tanh approximation (smooth, saturates exactly at +/-1 beyond |x| = 3). */
+    inline float ftanh (float x) noexcept
+    {
+        if (x > 3.0f) return 1.0f;
+        if (x < -3.0f) return -1.0f;
+        const float x2 = x * x;
+        return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+    }
+
+    inline float onePoleA (double f, double rate) { return (float) (1.0 - std::exp (-2.0 * kPi * f / rate)); }
+
+    /** Asymmetric class-A curve with unity slope at 0. */
+    inline float asym (float u, float b) noexcept
+    {
+        const float tb = ftanh (b);
+        return (ftanh (u + b) - tb) / (1.0f - tb * tb);
+    }
+
+    /** Oxford-Inflator style curve (curve = 0): lifts low levels ~+3.5 dB, lands smoothly on 1.0. */
+    inline float inflate (float u) noexcept
+    {
+        const float a = std::min (std::abs (u), 1.0f);
+        const float a2 = a * a, a3 = a2 * a, a4 = a2 * a2;
+        const float y = 1.5f * a - 0.5f * a3 - 0.0625f * (a2 - 2.0f * a3 + a4);
+        return u < 0.0f ? -y : y;
+    }
+}
+
+void Analog::prepare (double baseFs, int factor)
 {
     fs = baseFs; osFs = baseFs * factor;
     fastEnv.setup (fs, 10.0f, 30.0f);
     lt.setup (fs, 2.0);
+    pkRel = tauCoef (1.5, fs);
+    hotA = msToCoef (3.0f, osFs); hotR = msToCoef (60.0f, osFs);
     for (int c = 0; c < 2; ++c)
     {
+        iron[c].a      = onePoleA (110.0 * tolIron[c], osFs);
+        thickIron[c].a = onePoleA (160.0 * tolIron[c], osFs);
         preEmph[c].c = design::highShelf (osFs, 3000.0, 1.0,  4.0);
-        deEmph[c].c  = design::highShelf (osFs, 3000.0, 1.0, -4.0);
-        silkHp[c].c  = design::highpass  (osFs, 1600.0, 0.7071);
+        deEmph[c].c  = design::highShelf (osFs, 3000.0, 1.0, -5.0);
         dc[c].c      = design::highpass1 (fs, 8.0);
     }
     reset();
 }
 
-void Sweet::reset()
+void Analog::reset()
 {
-    for (int c = 0; c < 2; ++c) { preEmph[c].reset(); deEmph[c].reset(); bump[c].reset(); silkHp[c].reset(); dc[c].reset(); }
-    fastEnv.v = 1.0e-9f; lt.v = 1.0e-3f; lastBump = -1.0f;
+    for (int c = 0; c < 2; ++c)
+    {
+        iron[c].z = hfSoft[c].z = thickIron[c].z = 0.0f;
+        preEmph[c].reset(); deEmph[c].reset(); bump[c].reset(); air[c].reset(); dc[c].reset();
+        bump[c].c = air[c].c = BiquadCoeffs();
+        tapePrev[c] = hotEnv[c] = 0.0f;
+    }
+    fastEnv.v = 1.0e-9f; lt.v = 1.0e-3f; pk = 0.1f;
+    lastBump = lastAir = lastSoft = -1.0f;
 }
 
-void Sweet::computeDrive (const float* l, const float* r, int n, float amt, float* driveOut) noexcept
+void Analog::computeLevels (const float* l, const float* r, int n, float amt, float* sweetDrive, float* norm) noexcept
 {
     for (int s = 0; s < n; ++s)
     {
         const float m = 0.5f * (l[s] + r[s]);
         const float p = fastEnv.push (m);
         lt.push (m * m);
+        const float am = std::max (std::abs (l[s]), std::abs (r[s]));
+        pk = am > pk ? am : am + (pk - am) * pkRel;
         const float ltR = std::sqrt (lt.v);
-        // quieter than average -> a little more drive, louder -> less ("sweet", not dirty)
         const float df = std::clamp (std::sqrt (ltR / (std::sqrt (p) + 1.0e-6f)), 0.7f, 1.5f);
-        driveOut[s] = (0.15f + 0.6f * amt) / std::max (ltR * 1.41f, 0.003f) * df;
+        sweetDrive[s] = (0.2f + 2.0f * std::pow (amt, 1.3f)) / std::max (ltR * 1.41f, 0.003f) * df;
+        norm[s] = 0.95f / std::max (pk, 0.003f);
     }
 }
 
-void Sweet::process (float* const* ch, int numOs, int factor, const float* drive, float amt, int character) noexcept
+void Analog::process (float* const* ch, int numOs, int factor, const float* sweetDrive, const float* norm, const Params& p) noexcept
 {
-    const float mixAmt = std::min (1.0f, amt * 1.6f);
-    const float bumpDb = character == Tape ? 1.2f * amt : 0.0f;
+    const float color = std::clamp (p.color, 0.0f, 1.5f);
+    const float dense = std::clamp (p.dense, 0.0f, 2.2f);
+    const float thick = std::clamp (p.thick, 0.0f, 2.2f);
+    const float sweet = std::clamp (p.sweet, 0.0f, 1.0f);
+    if (color < 1.0e-4f && dense < 1.0e-4f && thick < 1.0e-4f && sweet < 5.0e-4f)
+        return;
+
+    // control-rate coefficient updates
+    const float softHz = (float) std::min (osFs * 0.45, 30000.0 - 9000.0 * std::min (color, 1.0f));
+    if (std::abs (softHz - lastSoft) > 50.0f)
+    {
+        for (int c = 0; c < 2; ++c) hfSoft[c].a = onePoleA (softHz * tolHf[c], osFs);
+        lastSoft = softHz;
+    }
+    const float airDb = 3.0f * std::min (dense, 1.2f);
+    if (std::abs (airDb - lastAir) > 0.02f)
+    {
+        air[0].c = air[1].c = airDb < 0.01f ? BiquadCoeffs() : design::highShelf (osFs, 14000.0, 0.8, airDb);
+        lastAir = airDb;
+    }
+    const float bumpDb = p.sweetChar == Tape ? 1.8f * sweet : 0.0f;
     if (std::abs (bumpDb - lastBump) > 0.01f)
     {
-        bump[0].c = bump[1].c = bumpDb < 0.01f ? BiquadCoeffs() : design::peaking (osFs, 75.0, 0.9, bumpDb);
+        bump[0].c = bump[1].c = bumpDb < 0.01f ? BiquadCoeffs() : design::peaking (osFs, 60.0, 0.9, bumpDb);
         lastBump = bumpDb;
     }
+
+    const float colorMix = std::min (1.0f, color * 1.5f);
+    const float colorGain = dbToGain (-3.0f + 12.0f * std::min (color, 1.0f));
+    const float denseSat = std::min (1.0f, 0.7f * dense), denseEnh = std::min (1.0f, 0.6f * dense);
+    const float thickMix = std::min (1.0f, thick * 1.1f);
+    const float fat = std::clamp ((thick - 0.6f) / 0.6f, 0.0f, 1.0f);
+    const float fatK = 1.0f + 1.5f * fat, fatN = 1.0f / ftanh (fatK);
+    const float sweetMix = std::min (1.0f, sweet * 1.6f);
+    // keep the level up when it gets dirty: makeup for the fundamental lost in the curve
+    const float u0 = 0.2f + 2.0f * std::pow (sweet, 1.3f);
+    const float sweetMakeup = p.sweetChar == HotTube ? 1.0f : std::pow (u0 / std::tanh (u0), 0.75f);
+    constexpr float tp1 = 0.09966799f, pentN = 1.0f / (1.6f * (1.0f - tp1 * tp1)); // tanh(0.1)
+
     for (int c = 0; c < 2; ++c)
     {
-        float* x = ch[c];
+        float* xs = ch[c];
         for (int i = 0; i < numOs; ++i)
         {
-            const float in = x[i];
-            const float g = drive[i / factor];
-            float y;
-            switch (character)
+            float x = xs[i];
+            const float gn = norm[i / factor];
+
+            // 1. CHENG Color: iron + class-A amp, slightly different per channel
+            if (colorMix > 0.0f)
             {
-                case Tape:
-                {
-                    const float e = preEmph[c].process (in);
-                    y = bump[c].process (deEmph[c].process (std::tanh (g * e) / g));
-                    break;
-                }
-                case Silk:
-                {
-                    const float hp = silkHp[c].process (in);
-                    const float g2 = g * 1.4f;
-                    y = (in - hp) + tube (g2 * hp) / g2;
-                    break;
-                }
-                default:
-                    y = tube (g * in) / g;
-                    break;
+                const float g = colorGain * tolDrive[c];
+                float u = g * x;
+                const float lf = iron[c].lp (u);
+                u += (ftanh (1.8f * lf) / 1.8f - lf) * 0.9f;
+                float y = asym (u, 0.06f + tolBias[c]) / g;
+                y = hfSoft[c].lp (y);
+                x += colorMix * (y - x);
             }
-            x[i] = in + mixAmt * (y - in);
+
+            // 2. Dense: parallel pentode + triode, then enhance-style soft clip and air
+            if (dense > 0.0f)
+            {
+                const float u = gn * x;
+                const float pent = (ftanh (1.6f * u + 0.1f) - tp1) * pentN;
+                const float tri  = asym (0.8f * u, 0.25f) / 0.8f;
+                x += denseSat * ((0.55f * pent + 0.45f * tri) / gn - x);
+                const float ge = gn * (1.0f + 0.6f * dense);
+                x += denseEnh * (ftanh (ge * x) / ge - x);
+                x = air[c].process (x);
+            }
+
+            // 3. Thick: inflator + low iron + fat
+            if (thickMix > 0.0f)
+            {
+                const float gi = gn * (1.0f + 0.8f * fat);
+                float u = gi * x;
+                if (fat > 0.0f) u = ftanh (fatK * u) * fatN;
+                const float lf = thickIron[c].lp (u);
+                u += (ftanh (2.2f * lf) / 2.2f - lf) * 0.8f * std::min (thick, 1.0f);
+                x += thickMix * (inflate (u) / gi - x);
+            }
+
+            // 4. Sweet
+            if (sweetMix > 0.0f)
+            {
+                const float gs = sweetDrive[i / factor];
+                float y;
+                switch (p.sweetChar)
+                {
+                    case Tape:
+                    {
+                        const float e = preEmph[c].process (x);
+                        const float v = gs * (e + 0.25f * (e - tapePrev[c]));
+                        tapePrev[c] = e;
+                        y = bump[c].process (deEmph[c].process (ftanh (v) / gs));
+                        break;
+                    }
+                    case HotTube:
+                    {
+                        const float g2 = gs * 1.3f;
+                        const float u = g2 * x;
+                        const float au = std::abs (u);
+                        hotEnv[c] = au + (hotEnv[c] - au) * (au > hotEnv[c] ? hotA : hotR);
+                        const float b = 0.15f + 0.5f * std::min (hotEnv[c], 2.0f);
+                        y = asym (u, b) / g2 / (1.0f + 0.12f * hotEnv[c]);
+                        break;
+                    }
+                    default: // Pentode
+                        y = (ftanh (gs * x + 0.05f) - 0.04995837f) / (gs * 0.99750416f);
+                        break;
+                }
+                x += sweetMix * (y * sweetMakeup - x);
+            }
+            xs[i] = x;
         }
     }
 }
 
-void Sweet::postDc (float* l, float* r, int n) noexcept
+void Analog::postDc (float* l, float* r, int n) noexcept
 {
     for (int s = 0; s < n; ++s) { l[s] = dc[0].process (l[s]); r[s] = dc[1].process (r[s]); }
 }

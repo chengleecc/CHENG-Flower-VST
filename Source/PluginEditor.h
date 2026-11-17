@@ -94,7 +94,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int baseW = 980, baseH = 660;
+    static constexpr int baseW = 980, baseH = 720;
     void refresh() { timerCallback(); }
 
 private:
@@ -112,7 +112,7 @@ private:
         flui::Segmented mode, sweetChar;
         flui::Toggle autoGain, bypass, limiter;
         flui::Flower flower;
-        flui::Knob shine, low, sweet, focus, harsh, width, output, ceiling, mix;
+        flui::Knob shine, thick, low, sweet, focus, harsh, width, color, output, ceiling, mix;
         flui::Spectrum spectrum;
         flui::LevelMeter meter;
         juce::String infoLine;

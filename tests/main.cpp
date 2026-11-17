@@ -14,10 +14,12 @@ static void set (ChengFlowerProcessor& p, const char* id, float v)
     prm->setValueNotifyingHost (prm->convertTo0to1 (v));
 }
 
+/** Defaults, but with the always-on Color off so module tests start from a clean path. */
 static void resetAll (ChengFlowerProcessor& p)
 {
     for (auto* prm : p.getParameters())
         prm->setValueNotifyingHost (prm->getDefaultValue());
+    set (p, "color", 0.0f);
 }
 
 static void check (const char* name, bool ok, const char* fmt, double a, double b = 0)
@@ -81,7 +83,7 @@ int main (int argc, char** argv)
         ChengFlowerProcessor p;
         const double fs = 48000.0;
         set (p, "bloom", argc > 3 ? juce::String (argv[3]).getFloatValue() : -35.0f);
-        set (p, "shine", 40.0f); set (p, "sweet", 30.0f); set (p, "low", 55.0f); set (p, "deharsh", 25.0f);
+        set (p, "shine", 40.0f); set (p, "sweet", 30.0f); set (p, "low", 55.0f); set (p, "deharsh", 25.0f); set (p, "thick", 45.0f);
         // feed some music-like signal so meters and spectrum have content
         std::mt19937 rng (3); std::normal_distribution<float> nd (0.0f, 1.0f);
         float pk = 0.0f, b1 = 0.0f;
@@ -207,23 +209,67 @@ int main (int argc, char** argv)
                 resetAll (p); set (p, "mode", (float) mode);
             }
 
-            // 7. Sweet: harmonics present, level preserved
+            // 7. Sweet: clearly audible harmonics, level kept in range
             for (int ch : { 0, 1, 2 })
             {
                 set (p, "autoGain", 0.0f); set (p, "sweet", 100.0f); set (p, "sweetChar", (float) ch);
                 run (p, fs, 3.0, sine (fs, 200, 0.3f), L, R);
                 const double f0 = tone (L, fs, 200), h2 = tone (L, fs, 400), h3 = tone (L, fs, 600);
                 const double thd = std::sqrt (h2 * h2 + h3 * h3) / f0;
-                const char* nm[] = { "sweet tube: harmonics / level", "sweet tape: harmonics / level", "sweet silk: harmonics / level" };
-                const double minThd = ch == 2 ? 0.0 : 0.003; // silk only touches the highs
-                check (nm[ch], thd >= minThd && std::abs (db (f0 / 0.3)) < 1.5, "THD %.2f%%  level %+.2f dB", thd * 100.0, db (f0 / 0.3));
+                const char* nm[] = { "sweet pentode: harmonics / level", "sweet tape: harmonics / level", "sweet hot tube: harmonics / level" };
+                check (nm[ch], thd > 0.03 && std::abs (db (f0 / 0.3)) < 3.5 && allFinite (L), "THD %.1f%%  level %+.2f dB", thd * 100.0, db (f0 / 0.3));
                 resetAll (p); set (p, "mode", (float) mode);
             }
+
+            // 7b. Color (default 35%): audible harmonics + left/right tolerance
             {
-                set (p, "autoGain", 0.0f); set (p, "sweet", 100.0f); set (p, "sweetChar", 2.0f);
-                run (p, fs, 3.0, sine (fs, 2500, 0.3f), L, R);
-                const double thd = std::sqrt (std::pow (tone (L, fs, 5000), 2) + std::pow (tone (L, fs, 7500), 2)) / tone (L, fs, 2500);
-                check ("sweet silk: harmonics on 2.5 kHz", thd > 0.003, "THD %.2f%%", thd * 100.0);
+                set (p, "color", 35.0f);
+                run (p, fs, 3.0, sine (fs, 100, 0.5f), L, R);
+                const double thd = std::sqrt (std::pow (tone (L, fs, 200), 2) + std::pow (tone (L, fs, 300), 2)) / tone (L, fs, 100);
+                std::vector<float> d (L.size()); for (size_t i = 0; i < L.size(); ++i) d[i] = L[i] - R[i];
+                check ("color: harmonics at default", thd > 0.003, "THD %.2f%%", thd * 100.0);
+                check ("color: L/R tolerance (analog stereo)", db (rms (d) / rms (L)) > -70.0, "L-R %.1f dB", db (rms (d) / rms (L)));
+                resetAll (p); set (p, "mode", (float) mode);
+            }
+
+            // 7c. Dense drive adds harmonics; Thick inflates quiet parts
+            {
+                set (p, "autoGain", 0.0f); set (p, "limiter", 0.0f); set (p, "bloom", 100.0f);
+                run (p, fs, 3.0, sine (fs, 300, 0.3f), L, R);
+                const double thd = std::sqrt (std::pow (tone (L, fs, 600), 2) + std::pow (tone (L, fs, 900), 2)) / tone (L, fs, 300);
+                check ("dense: HG-style harmonics", thd > 0.02, "THD %.1f%%", thd * 100.0);
+                resetAll (p); set (p, "mode", (float) mode);
+
+                set (p, "autoGain", 0.0f); set (p, "limiter", 0.0f);
+                auto quietRatio = [&] (float th)
+                {
+                    set (p, "thick", th);
+                    // loud burst then quiet passage, repeating
+                    run (p, fs, 4.0, [&] (int i, float& l, float& r)
+                         { const double t = (double) i / fs; const float a = std::fmod (t, 0.5) < 0.1 ? 0.8f : 0.08f;
+                           l = r = a * (float) std::sin (2 * fl::kPi * 440 * t); }, L, R, nullptr, 2.0);
+                    double loud = 0, quiet = 0;
+                    for (size_t i = 0; i < L.size(); ++i)
+                    {
+                        const double t = std::fmod ((double) i / fs, 0.5);
+                        if (t > 0.02 && t < 0.09) loud = std::max (loud, (double) std::abs (L[i]));
+                        if (t > 0.2 && t < 0.45) quiet = std::max (quiet, (double) std::abs (L[i]));
+                    }
+                    return db (quiet / loud);
+                };
+                const double q0 = quietRatio (0.0f), q1 = quietRatio (100.0f);
+                check ("thick: quiet parts inflated vs loud", q1 > q0 + 2.5, "%+.1f dB vs %+.1f", q1, q0);
+                resetAll (p); set (p, "mode", (float) mode);
+            }
+
+            // 7d. Open adds 3D: a mono source gets a decorrelated side
+            {
+                set (p, "autoGain", 0.0f); set (p, "bloom", -100.0f);
+                std::mt19937 rng (4); std::normal_distribution<float> nd (0.0f, 0.1f);
+                run (p, fs, 2.0, [&] (int, float& l, float& r) { l = r = nd (rng); }, L, R);
+                std::vector<float> sd (L.size()), md (L.size());
+                for (size_t i = 0; i < L.size(); ++i) { sd[i] = 0.5f * (L[i] - R[i]); md[i] = 0.5f * (L[i] + R[i]); }
+                check ("open: mono source gains 3D side", db (rms (sd) / rms (md)) > -20.0, "side %+.1f dB", db (rms (sd) / rms (md)));
                 resetAll (p); set (p, "mode", (float) mode);
             }
 
@@ -296,14 +342,15 @@ int main (int argc, char** argv)
                 resetAll (p); set (p, "mode", (float) mode);
             }
 
-            // 11. Auto gain keeps loudness matched with everything pushed
+            // 11. Match keeps loudness matched with everything pushed
             {
+                set (p, "autoGain", 1.0f); set (p, "color", 50.0f); set (p, "thick", 60.0f);
                 set (p, "bloom", 80.0f); set (p, "low", 80.0f); set (p, "shine", 80.0f); set (p, "sweet", 60.0f); set (p, "width", 50.0f);
                 std::mt19937 rng (13); std::normal_distribution<float> nd (0.0f, 0.1f);
                 float pk = 0;
                 run (p, fs, 8.0, [&] (int, float& l, float& r) { const float w = nd (rng); pk = 0.95f * pk + 0.3f * w; l = r = pk + w * 0.3f; }, L, R, &IN, 3.0);
                 const double d = db (rms (L) / rms (IN));
-                check ("auto gain: loudness matched", std::abs (d) < 1.5, "%+.2f dB", d);
+                check ("match: loudness matched", std::abs (d) < 1.5, "%+.2f dB", d);
                 resetAll (p); set (p, "mode", (float) mode);
             }
 

@@ -5,6 +5,9 @@ namespace
 {
     constexpr int kSub = 32;              // control-rate sub-block
     constexpr double kLookaheadMs = 1.5;  // Master-mode limiter look-ahead
+
+    /** "Bold" knob taper: the first half stays fine-grained, the top half accelerates to ~2.2x. */
+    inline float bold (float x) noexcept { return x + 1.2f * x * x * x; }
 }
 
 //==============================================================================
@@ -18,6 +21,7 @@ ChengFlowerProcessor::ChengFlowerProcessor()
     pSweet = prm ("sweet");   pSweetChar = prm ("sweetChar"); pFocus = prm ("focus"); pHarsh = prm ("deharsh");
     pWidth = prm ("width");   pAuto = prm ("autoGain"); pOut = prm ("output"); pCeil = prm ("ceiling");
     pLimit = prm ("limiter"); pMix = prm ("mix");      pBypass = prm ("bypass");
+    pThick = prm ("thick");   pColor = prm ("color");
     startTimerHz (10);
 }
 
@@ -37,11 +41,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout ChengFlowerProcessor::create
     v.push_back (pct ("shine",   "Shine",    0.0f, 0.0f));
     v.push_back (pct ("low",     "Low End",  0.0f, 0.0f));
     v.push_back (pct ("sweet",   "Sweet",    0.0f, 0.0f));
-    v.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "sweetChar", 1 }, "Sweet Character", StringArray { "Tube", "Tape", "Silk" }, 0));
+    v.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "sweetChar", 1 }, "Sweet Character", StringArray { "Pentode", "Tape", "Hot Tube" }, 0));
     v.push_back (pct ("focus",   "Focus",    0.0f, 0.0f));
     v.push_back (pct ("deharsh", "De-Harsh", 0.0f, 0.0f));
     v.push_back (pct ("width",   "Width",    0.0f, 0.0f));
-    v.push_back (std::make_unique<AudioParameterBool> (ParameterID { "autoGain", 1 }, "Auto Gain", true));
+    v.push_back (pct ("thick",   "Thick",    0.0f, 0.0f));
+    v.push_back (pct ("color",   "Color",    0.0f, 35.0f));
+    v.push_back (std::make_unique<AudioParameterBool> (ParameterID { "autoGain", 1 }, "Match", false));
     v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "output", 1 }, "Output", NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f,
                                                         AudioParameterFloatAttributes().withLabel ("dB")));
     v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "ceiling", 1 }, "Ceiling", NormalisableRange<float> (-12.0f, 0.0f, 0.1f), -0.3f,
@@ -93,7 +99,8 @@ void ChengFlowerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     osLatMaster = (int) std::round (osMaster->getLatencyInSamples());
 
     unmask.prepare (fs); bloom.prepare (fs); lowEnd.prepare (fs); focus.prepare (fs); shine.prepare (fs);
-    sweetTrack.prepare (fs, 2); sweetMaster.prepare (fs, 4);
+    depth.prepare (fs);
+    analogTrack.prepare (fs, 2); analogMaster.prepare (fs, 4);
     autoGain.prepare (fs);
     const int maxLa = (int) std::ceil (kLookaheadMs * 0.001 * fs) + 4;
     limiter.prepare (fs, maxLa);
@@ -106,10 +113,11 @@ void ChengFlowerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     for (auto& d : dry) d.assign ((size_t) maxBlock, 0.0f);
     mono.assign ((size_t) maxBlock, 0.0f);
     drive.assign ((size_t) maxBlock, 0.0f);
+    norm.assign ((size_t) maxBlock, 0.0f);
     mid.assign ((size_t) kSub, 0.0f);
     side.assign ((size_t) kSub, 0.0f);
 
-    for (auto* s : { &smBloom, &smShine, &smLow, &smSweet, &smFocus, &smHarsh, &smWidth, &smMix })
+    for (auto* s : { &smBloom, &smShine, &smLow, &smSweet, &smFocus, &smHarsh, &smWidth, &smThick, &smColor, &smMix })
         s->reset (fs, 0.05);
     smOut.reset (fs, 0.05); smBypass.reset (fs, 0.02);
     smBloom.setCurrentAndTargetValue (pBloom->load() * 0.01f);
@@ -119,6 +127,8 @@ void ChengFlowerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     smFocus.setCurrentAndTargetValue (pFocus->load() * 0.01f);
     smHarsh.setCurrentAndTargetValue (pHarsh->load() * 0.01f);
     smWidth.setCurrentAndTargetValue (pWidth->load() * 0.01f);
+    smThick.setCurrentAndTargetValue (pThick->load() * 0.01f);
+    smColor.setCurrentAndTargetValue (pColor->load() * 0.01f);
     smMix.setCurrentAndTargetValue (pMix->load() * 0.01f);
     smOut.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (pOut->load()));
     smBypass.setCurrentAndTargetValue (pBypass->load() > 0.5f ? 1.0f : 0.0f);
@@ -133,7 +143,7 @@ void ChengFlowerProcessor::switchMode (int newMode)
 {
     curMode = newMode;
     osTrack->reset(); osMaster->reset();
-    sweetTrack.reset(); sweetMaster.reset();
+    analogTrack.reset(); analogMaster.reset();
     const int osLat = curMode == MasterMode ? osLatMaster : osLatTrack;
     limiter.setLookahead (curMode == MasterMode ? (int) std::round (kLookaheadMs * 0.001 * fs) : 0);
     for (int c = 0; c < 2; ++c)
@@ -200,6 +210,8 @@ void ChengFlowerProcessor::processChunk (int n)
     smFocus.setTargetValue (pFocus->load() * 0.01f);
     smHarsh.setTargetValue (pHarsh->load() * 0.01f);
     smWidth.setTargetValue (pWidth->load() * 0.01f);
+    smThick.setTargetValue (pThick->load() * 0.01f);
+    smColor.setTargetValue (pColor->load() * 0.01f);
     smMix.setTargetValue (pMix->load() * 0.01f);
     smOut.setTargetValue (juce::Decibels::decibelsToGain (pOut->load()));
     smBypass.setTargetValue (pBypass->load() > 0.5f ? 1.0f : 0.0f);
@@ -208,12 +220,15 @@ void ChengFlowerProcessor::processChunk (int n)
     for (int o = 0; o < n; o += kSub)
     {
         const int k = std::min (kSub, n - o);
-        const float b = smBloom.skip (k), sh = smShine.skip (k), lo = smLow.skip (k);
-        const float fo = smFocus.skip (k), hr = smHarsh.skip (k), wd = smWidth.skip (k);
+        const float bRaw = smBloom.skip (k);
+        const float b  = bRaw < 0.0f ? -bold (-bRaw) : bold (bRaw);
+        const float sh = bold (smShine.skip (k)), lo = bold (smLow.skip (k));
+        const float fo = std::min (1.6f, bold (smFocus.skip (k))), hr = bold (smHarsh.skip (k)), wd = bold (smWidth.skip (k));
+        const float open = std::max (0.0f, -b);
         float* l = L + o; float* r = R + o;
 
         // 1. dynamic unmasking (Open + De-Harsh)
-        unmask.analyse (l, r, k, std::max (0.0f, -b), hr);
+        unmask.analyse (l, r, k, open, hr);
         unmask.process (l, r, k);
 
         // 2. Open <-> Dense transient / density
@@ -223,7 +238,8 @@ void ChengFlowerProcessor::processChunk (int n)
         for (int s = 0; s < k; ++s) { mid[(size_t) s] = 0.5f * (l[s] + r[s]); side[(size_t) s] = 0.5f * (l[s] - r[s]); }
         lowEnd.process (mid.data(), side.data(), k, lo);
         focus.process (mid.data(), side.data(), k, fo);
-        const float widen = 0.9f * std::min (1.0f, wd + 0.3f * std::max (0.0f, -b));
+        depth.process (mid.data(), side.data(), k, std::min (open, 1.6f));
+        const float widen = 0.9f * std::min (1.8f, wd + 0.3f * open);
         for (int s = 0; s < k; ++s)
         {
             const float sHi = widthHp[0].process (side[(size_t) s]);
@@ -239,23 +255,27 @@ void ChengFlowerProcessor::processChunk (int n)
         bloomAct += bloom.activityDb; ++subs;
     }
 
-    // 5. Sweet saturation (oversampled; always run so the latency stays constant)
+    // 5. analog stage at the oversampled rate: Color, Dense drive, Thick, Sweet
+    //    (always run through the oversampler so the latency stays constant)
     {
+        fl::Analog::Params ap;
         const float sw = smSweet.skip (n);
-        const int character = (int) pSweetChar->load();
+        const float bNow = smBloom.getCurrentValue();
+        ap.sweet = sw;
+        ap.sweetChar = (int) pSweetChar->load();
+        ap.color = smColor.skip (n) + 0.35f * bold (std::max (0.0f, -bNow)); // Open also adds tube bloom
+        ap.dense = bold (std::max (0.0f, bNow));
+        ap.thick = bold (smThick.skip (n));
         auto& os = curMode == MasterMode ? *osMaster : *osTrack;
-        auto& sweet = curMode == MasterMode ? sweetMaster : sweetTrack;
+        auto& analog = curMode == MasterMode ? analogMaster : analogTrack;
         const int factor = curMode == MasterMode ? 4 : 2;
-        sweet.computeDrive (L, R, n, sw, drive.data());
+        analog.computeLevels (L, R, n, sw, drive.data(), norm.data());
         juce::dsp::AudioBlock<float> block (work.getArrayOfWritePointers(), 2, (size_t) n);
         auto up = os.processSamplesUp (block);
-        if (sw > 0.0005f)
-        {
-            float* chs[2] = { up.getChannelPointer (0), up.getChannelPointer (1) };
-            sweet.process (chs, (int) up.getNumSamples(), factor, drive.data(), sw, character);
-        }
+        float* chs[2] = { up.getChannelPointer (0), up.getChannelPointer (1) };
+        analog.process (chs, (int) up.getNumSamples(), factor, drive.data(), norm.data(), ap);
         os.processSamplesDown (block);
-        sweet.postDc (L, R, n);
+        analog.postDc (L, R, n);
     }
 
     // 6. dry/wet (latency-matched dry)

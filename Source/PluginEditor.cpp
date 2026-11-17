@@ -20,6 +20,7 @@ namespace
     const Colour kShineC { 0xfff6d77a }, kLowC { 0xffe07a5f }, kSweetC { 0xfff2a65a };
     const Colour kFocusC { 0xff9ad1d4 }, kHarshC { 0xffb8a1e3 }, kWidthC { 0xff7fb7e8 };
     const Colour kOutC   { 0xffd9cfd3 };
+    const Colour kThickC { 0xffe58fa8 }, kColorC { 0xffd4a373 };
 
     juce::Font font (float h, bool bold = false)
     {
@@ -517,18 +518,20 @@ void LevelMeter::paint (juce::Graphics& g)
 ChengFlowerEditor::Content::Content (ChengFlowerProcessor& p)
     : proc (p), s (p.apvts),
       mode (s, "mode", { "Track", "Master" }, kRose),
-      sweetChar (s, "sweetChar", { "Tube", "Tape", "Silk" }, kSweetC),
-      autoGain (s, "autoGain", "AUTO GAIN", kFocusC),
+      sweetChar (s, "sweetChar", { "Pentode", "Tape", "Hot Tube" }, kSweetC),
+      autoGain (s, "autoGain", "MATCH", kFocusC),
       bypass (s, "bypass", "BYPASS", kLowC),
       limiter (s, "limiter", "LIMIT", kGold),
       flower (p),
-      shine (s, "shine", "SHINE", kShineC), low (s, "low", "LOW END", kLowC), sweet (s, "sweet", "SWEET", kSweetC),
+      shine (s, "shine", "SHINE", kShineC), thick (s, "thick", "THICK", kThickC), low (s, "low", "LOW END", kLowC),
+      sweet (s, "sweet", "SWEET", kSweetC),
       focus (s, "focus", "FOCUS", kFocusC), harsh (s, "deharsh", "DE-HARSH", kHarshC), width (s, "width", "WIDTH", kWidthC),
+      color (s, "color", "COLOR", kColorC),
       output (s, "output", "OUTPUT", kOutC), ceiling (s, "ceiling", "CEILING", kOutC), mix (s, "mix", "MIX", kOutC),
       spectrum (p)
 {
     for (juce::Component* c : std::initializer_list<juce::Component*> {
-             &mode, &sweetChar, &autoGain, &bypass, &limiter, &flower, &shine, &low, &sweet, &focus, &harsh, &width,
+             &mode, &sweetChar, &autoGain, &bypass, &limiter, &flower, &shine, &thick, &low, &sweet, &focus, &harsh, &width, &color,
              &output, &ceiling, &mix, &spectrum, &meter })
         addAndMakeVisible (c);
 }
@@ -545,6 +548,13 @@ void ChengFlowerEditor::Content::paint (juce::Graphics& g)
     g.setFont (font (28.0f, true));
     g.setColour (kRose);
     g.drawText ("Flower", 112, 12, 140, 34, juce::Justification::centredLeft);
+    {
+        const juce::Rectangle<float> badge (205.0f, 20.0f, 30.0f, 18.0f);
+        g.setColour (kGold.withAlpha (0.9f));
+        g.drawRoundedRectangle (badge, 9.0f, 1.2f);
+        g.setFont (font (11.0f, true));
+        g.drawText ("v2", badge, juce::Justification::centred);
+    }
     g.setColour (kEdge);
     g.drawHorizontalLine (58, 20.0f, (float) getWidth() - 20.0f);
 
@@ -553,7 +563,7 @@ void ChengFlowerEditor::Content::paint (juce::Graphics& g)
     g.drawText (infoLine, 260, 18, 330, 24, juce::Justification::centred);
 
     // output panel
-    auto op = juce::Rectangle<float> (712.0f, 480.0f, 248.0f, 164.0f);
+    auto op = juce::Rectangle<float> (712.0f, 542.0f, 248.0f, 164.0f);
     g.setColour (kPanel);
     g.fillRoundedRectangle (op, 10.0f);
     g.setColour (kEdge);
@@ -566,21 +576,21 @@ void ChengFlowerEditor::Content::resized()
     mode.setBounds (700, 17, 150, 26);
     autoGain.setBounds (858, 17, 100, 26);
 
-    flower.setBounds (300, 66, 380, 400);
+    flower.setBounds (300, 70, 380, 450);
 
-    const int kw = 104, kh = 112;
+    const int kw = 104, kh = 106;
     auto place = [&] (juce::Component& k, int cx, int cy) { k.setBounds (cx - kw / 2, cy - kh / 2, kw, kh); };
-    place (shine, 205, 150);  place (low, 150, 280);  place (sweet, 205, 400);
-    place (focus, 775, 150);  place (harsh, 830, 280); place (width, 775, 400);
-    sweetChar.setBounds (110, 458, 190, 22);
+    place (shine, 215, 125); place (thick, 160, 235); place (low, 160, 345); place (sweet, 215, 455);
+    place (focus, 765, 125); place (harsh, 820, 235); place (width, 820, 345); place (color, 765, 455);
+    sweetChar.setBounds (96, 512, 238, 22);
 
-    spectrum.setBounds (20, 486, 680, 158);
+    spectrum.setBounds (20, 548, 680, 158);
 
-    const int oy = 494;
+    const int oy = 556;
     output.setBounds (722, oy, 72, 100);
     ceiling.setBounds (790, oy, 72, 100);
     mix.setBounds (858, oy, 72, 100);
-    limiter.setBounds (796, 604, 60, 24);
+    limiter.setBounds (796, 666, 60, 24);
     meter.setBounds (934, oy + 6, 18, 134);
 }
 
@@ -597,7 +607,7 @@ void ChengFlowerEditor::Content::refresh()
     const float latMs = (float) (proc.getLatencySamples() * 1000.0 / sr);
     juce::String line;
     line << "LATENCY " << juce::String (latMs, 1) << " ms"
-         << "    AUTO " << (proc.meterAutoGain.load() >= 0 ? "+" : "") << juce::String (proc.meterAutoGain.load(), 1) << " dB"
+         << "    MATCH " << (proc.meterAutoGain.load() >= 0 ? "+" : "") << juce::String (proc.meterAutoGain.load(), 1) << " dB"
          << "    LIMIT " << juce::String (proc.meterLimiter.load(), 1) << " dB";
     if (line != infoLine) { infoLine = line; repaint (260, 18, 330, 24); }
 }

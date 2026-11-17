@@ -134,23 +134,52 @@ private:
 };
 
 //==============================================================================
-/** "Sweet" saturation, runs at the oversampled rate. */
-struct Sweet
+/** Decorrelated "3D" side injection used by Open (Oven-style size / depth). */
+struct Depth3D
 {
-    enum Character { Tube = 0, Tape = 1, Silk = 2 };
+    void prepare (double fs);
+    void reset();
+    /** Adds a decorrelated copy of the centre highs to the side channel. mono-compatible (side cancels in mono). */
+    void process (const float* mid, float* side, int n, float amt) noexcept;
+
+private:
+    double fs = 48000.0;
+    Biquad hp, shelf;
+    float ap[4] {}, z[4] {};
+    float lastShelf = -1.0f;
+};
+
+//==============================================================================
+/** Everything that runs at the oversampled rate: the analog colour of CHENG.
+      Color   - transformer iron + class-A amp, with left/right component tolerance (always-on character)
+      Dense   - parallel pentode + triode drive and a soft "enhance" clip (glossy, forward, loud)
+      Thick   - inflator curve + Neve-style low iron + fat drive at the top of the knob
+      Sweet   - Pentode / Tape / Hot Tube saturation, can get dirty                              */
+struct Analog
+{
+    enum SweetChar { Pentode = 0, Tape = 1, HotTube = 2 };
+    struct Params { float color = 0, dense = 0, thick = 0, sweet = 0; int sweetChar = 0; };
+
     void prepare (double baseFs, int factor);
     void reset();
-    /** Per base-rate sample drive normalisation; call on the base-rate signal first. */
-    void computeDrive (const float* l, const float* r, int n, float amt, float* driveOut) noexcept;
-    /** Process an oversampled block in place. drive[] is at the base rate. */
-    void process (float* const* ch, int numOs, int factor, const float* drive, float amt, int character) noexcept;
+    /** Base-rate level analysis: sweet drive and peak normalisation per sample. */
+    void computeLevels (const float* l, const float* r, int n, float sweetAmt, float* sweetDrive, float* norm) noexcept;
+    void process (float* const* ch, int numOs, int factor, const float* sweetDrive, const float* norm, const Params& p) noexcept;
     void postDc (float* l, float* r, int n) noexcept;
 
 private:
+    struct OnePole { float a = 0.0f, z = 0.0f; inline float lp (float x) noexcept { z += a * (x - z); return z; } };
     double fs = 48000.0, osFs = 96000.0;
-    PowerEnv fastEnv; LongTerm lt;
-    Biquad preEmph[2], deEmph[2], bump[2], silkHp[2], dc[2];
-    float lastBump = -1.0f;
+    PowerEnv fastEnv; LongTerm lt; float pk = 0.1f, pkRel = 0.0f;
+    OnePole iron[2], hfSoft[2], thickIron[2];
+    Biquad preEmph[2], deEmph[2], bump[2], air[2], dc[2];
+    float tapePrev[2] {}, hotEnv[2] {}, hotA = 0.0f, hotR = 0.0f;
+    float lastBump = -1.0f, lastAir = -1.0f, lastSoft = -1.0f;
+    // tolerance between the two channels (TMT-style): drive, bias, iron corner, HF corner
+    static constexpr float tolDrive[2] = { 1.0f, 1.07f };
+    static constexpr float tolBias[2]  = { 0.012f, -0.010f };
+    static constexpr float tolIron[2]  = { 1.0f, 1.06f };
+    static constexpr float tolHf[2]    = { 1.0f, 0.93f };
 };
 
 //==============================================================================

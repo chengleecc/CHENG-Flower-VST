@@ -19,7 +19,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "CHENG Flower"; }
+    const juce::String getName() const override { return "CHENG Flower v2"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -64,7 +64,7 @@ private:
     std::atomic<float>* prm (const char* id) const { return apvts.getRawParameterValue (id); }
 
     std::atomic<float> *pMode, *pBloom, *pShine, *pLow, *pSweet, *pSweetChar, *pFocus, *pHarsh, *pWidth,
-                       *pAuto, *pOut, *pCeil, *pLimit, *pMix, *pBypass;
+                       *pThick, *pColor, *pAuto, *pOut, *pCeil, *pLimit, *pMix, *pBypass;
 
     double fs = 48000.0;
     int maxBlock = 512;
@@ -75,7 +75,8 @@ private:
     fl::LowEnd lowEnd;
     fl::Focus focus;
     fl::Shine shine;
-    fl::Sweet sweetTrack, sweetMaster;
+    fl::Depth3D depth;
+    fl::Analog analogTrack, analogMaster;
     fl::AutoGain autoGain;
     fl::Limiter limiter;
     fl::Biquad widthHp[2];
@@ -86,9 +87,9 @@ private:
     fl::Delay dryMix[2], dryBypass[2];
 
     juce::AudioBuffer<float> work;
-    std::vector<float> dry[2], mono, drive, mid, side;
+    std::vector<float> dry[2], mono, drive, norm, mid, side;
 
-    juce::SmoothedValue<float> smBloom, smShine, smLow, smSweet, smFocus, smHarsh, smWidth, smMix, smOut, smBypass;
+    juce::SmoothedValue<float> smBloom, smShine, smLow, smSweet, smFocus, smHarsh, smWidth, smThick, smColor, smMix, smOut, smBypass;
     float fadeIn = 1.0f, fadeStep = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChengFlowerProcessor)

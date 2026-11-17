@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(ChengFlower VERSION 0.1.0)
+project(ChengFlower VERSION 2.0.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,9 +32,9 @@ set(FLOWER_DEFS
 juce_add_plugin(ChengFlower
     COMPANY_NAME "CHENG"
     PLUGIN_MANUFACTURER_CODE Chng
-    PLUGIN_CODE ChFl
+    PLUGIN_CODE ChF2
     FORMATS VST3
-    PRODUCT_NAME "CHENG Flower"
+    PRODUCT_NAME "CHENG Flower v2"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
