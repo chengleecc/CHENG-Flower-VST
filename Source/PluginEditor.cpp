@@ -553,7 +553,7 @@ void ChengFlowerEditor::Content::paint (juce::Graphics& g)
         g.setColour (kGold.withAlpha (0.9f));
         g.drawRoundedRectangle (badge, 9.0f, 1.2f);
         g.setFont (font (11.0f, true));
-        g.drawText ("v2", badge, juce::Justification::centred);
+        g.drawText ("v3", badge, juce::Justification::centred);
     }
     g.setColour (kEdge);
     g.drawHorizontalLine (58, 20.0f, (float) getWidth() - 20.0f);

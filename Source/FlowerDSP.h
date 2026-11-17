@@ -173,6 +173,7 @@ private:
     PowerEnv fastEnv; LongTerm lt; float pk = 0.1f, pkRel = 0.0f;
     OnePole iron[2], hfSoft[2], thickIron[2];
     Biquad preEmph[2], deEmph[2], bump[2], air[2], dc[2];
+    Biquad emDe[2], emPre[2];   // highs are lowered before the colour/dense/thick curves and restored after (less harsh)
     float tapePrev[2] {}, hotEnv[2] {}, hotA = 0.0f, hotR = 0.0f;
     float lastBump = -1.0f, lastAir = -1.0f, lastSoft = -1.0f;
     // tolerance between the two channels (TMT-style): drive, bias, iron corner, HF corner

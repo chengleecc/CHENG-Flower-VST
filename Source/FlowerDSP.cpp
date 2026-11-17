@@ -400,7 +400,7 @@ void Shine::process (float* l, float* r, int n, float amt) noexcept
         air[0].c = air[1].c = co;
         lastAir = airDb;
     }
-    const float k = amt * 0.55f * gate;
+    const float k = amt * 0.4f * gate;
     float* ch[2] = { l, r };
     for (int c = 0; c < 2; ++c)
         for (int s = 0; s < n; ++s)
@@ -507,6 +507,8 @@ void Analog::prepare (double baseFs, int factor)
     {
         iron[c].a      = onePoleA (110.0 * tolIron[c], osFs);
         thickIron[c].a = onePoleA (160.0 * tolIron[c], osFs);
+        emDe[c].c  = design::highShelf (osFs, 3500.0, 0.8, -6.0);
+        emPre[c].c = design::highShelf (osFs, 3500.0, 0.8,  6.0);
         preEmph[c].c = design::highShelf (osFs, 3000.0, 1.0,  4.0);
         deEmph[c].c  = design::highShelf (osFs, 3000.0, 1.0, -5.0);
         dc[c].c      = design::highpass1 (fs, 8.0);
@@ -520,6 +522,7 @@ void Analog::reset()
     {
         iron[c].z = hfSoft[c].z = thickIron[c].z = 0.0f;
         preEmph[c].reset(); deEmph[c].reset(); bump[c].reset(); air[c].reset(); dc[c].reset();
+        emDe[c].reset(); emPre[c].reset();
         bump[c].c = air[c].c = BiquadCoeffs();
         tapePrev[c] = hotEnv[c] = 0.0f;
     }
@@ -559,7 +562,7 @@ void Analog::process (float* const* ch, int numOs, int factor, const float* swee
         for (int c = 0; c < 2; ++c) hfSoft[c].a = onePoleA (softHz * tolHf[c], osFs);
         lastSoft = softHz;
     }
-    const float airDb = 3.0f * std::min (dense, 1.2f);
+    const float airDb = 1.2f * std::min (dense, 1.0f);
     if (std::abs (airDb - lastAir) > 0.02f)
     {
         air[0].c = air[1].c = airDb < 0.01f ? BiquadCoeffs() : design::highShelf (osFs, 14000.0, 0.8, airDb);
@@ -573,11 +576,11 @@ void Analog::process (float* const* ch, int numOs, int factor, const float* swee
     }
 
     const float colorMix = std::min (1.0f, color * 1.5f);
-    const float colorGain = dbToGain (-3.0f + 12.0f * std::min (color, 1.0f));
-    const float denseSat = std::min (1.0f, 0.7f * dense), denseEnh = std::min (1.0f, 0.6f * dense);
+    const float colorDrive = 0.35f + 0.65f * std::min (color, 1.0f);  // relative to the programme peak
+    const float denseSat = std::min (1.0f, 0.35f * dense), denseEnh = std::min (1.0f, 0.3f * dense);
     const float thickMix = std::min (1.0f, thick * 1.1f);
-    const float fat = std::clamp ((thick - 0.6f) / 0.6f, 0.0f, 1.0f);
-    const float fatK = 1.0f + 1.5f * fat, fatN = 1.0f / ftanh (fatK);
+    const float fat = std::clamp ((thick - 0.85f) / 0.45f, 0.0f, 1.0f);
+    const float fatK = 1.0f + 0.8f * fat, fatN = 1.0f / ftanh (fatK);
     const float sweetMix = std::min (1.0f, sweet * 1.6f);
     // keep the level up when it gets dirty: makeup for the fundamental lost in the curve
     const float u0 = 0.2f + 2.0f * std::pow (sweet, 1.3f);
@@ -591,14 +594,16 @@ void Analog::process (float* const* ch, int numOs, int factor, const float* swee
         {
             float x = xs[i];
             const float gn = norm[i / factor];
+            const bool shaping = colorMix > 0.0f || dense > 0.0f || thickMix > 0.0f;
+            if (shaping) x = emDe[c].process (x);
 
             // 1. CHENG Color: iron + class-A amp, slightly different per channel
             if (colorMix > 0.0f)
             {
-                const float g = colorGain * tolDrive[c];
+                const float g = gn * colorDrive * tolDrive[c];
                 float u = g * x;
                 const float lf = iron[c].lp (u);
-                u += (ftanh (1.8f * lf) / 1.8f - lf) * 0.9f;
+                u += (ftanh (1.8f * lf) / 1.8f - lf) * 0.5f;
                 float y = asym (u, 0.06f + tolBias[c]) / g;
                 y = hfSoft[c].lp (y);
                 x += colorMix * (y - x);
@@ -611,7 +616,7 @@ void Analog::process (float* const* ch, int numOs, int factor, const float* swee
                 const float pent = (ftanh (1.6f * u + 0.1f) - tp1) * pentN;
                 const float tri  = asym (0.8f * u, 0.25f) / 0.8f;
                 x += denseSat * ((0.55f * pent + 0.45f * tri) / gn - x);
-                const float ge = gn * (1.0f + 0.6f * dense);
+                const float ge = gn * (0.85f + 0.35f * dense);
                 x += denseEnh * (ftanh (ge * x) / ge - x);
                 x = air[c].process (x);
             }
@@ -623,9 +628,10 @@ void Analog::process (float* const* ch, int numOs, int factor, const float* swee
                 float u = gi * x;
                 if (fat > 0.0f) u = ftanh (fatK * u) * fatN;
                 const float lf = thickIron[c].lp (u);
-                u += (ftanh (2.2f * lf) / 2.2f - lf) * 0.8f * std::min (thick, 1.0f);
+                u += (ftanh (2.2f * lf) / 2.2f - lf) * 0.5f * std::min (thick, 1.0f);
                 x += thickMix * (inflate (u) / gi - x);
             }
+            if (shaping) x = emPre[c].process (x);
 
             // 4. Sweet
             if (sweetMix > 0.0f)

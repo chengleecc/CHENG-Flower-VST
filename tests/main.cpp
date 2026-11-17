@@ -237,7 +237,7 @@ int main (int argc, char** argv)
                 set (p, "autoGain", 0.0f); set (p, "limiter", 0.0f); set (p, "bloom", 100.0f);
                 run (p, fs, 3.0, sine (fs, 300, 0.3f), L, R);
                 const double thd = std::sqrt (std::pow (tone (L, fs, 600), 2) + std::pow (tone (L, fs, 900), 2)) / tone (L, fs, 300);
-                check ("dense: HG-style harmonics", thd > 0.02, "THD %.1f%%", thd * 100.0);
+                check ("dense: HG-style harmonics", thd > 0.008, "THD %.1f%%", thd * 100.0);
                 resetAll (p); set (p, "mode", (float) mode);
 
                 set (p, "autoGain", 0.0f); set (p, "limiter", 0.0f);
@@ -259,6 +259,38 @@ int main (int argc, char** argv)
                 };
                 const double q0 = quietRatio (0.0f), q1 = quietRatio (100.0f);
                 check ("thick: quiet parts inflated vs loud", q1 > q0 + 2.5, "%+.1f dB vs %+.1f", q1, q0);
+                resetAll (p); set (p, "mode", (float) mode);
+            }
+
+            // 7e. v3 gentleness guards
+            {
+                // defaults (Color 15%) on a hot master signal
+                for (auto* prm : p.getParameters()) prm->setValueNotifyingHost (prm->getDefaultValue());
+                set (p, "mode", (float) mode); set (p, "limiter", 0.0f);
+                run (p, fs, 3.0, sine (fs, 100, 0.89f), L, R);
+                double thd = std::sqrt (std::pow (tone (L, fs, 200), 2) + std::pow (tone (L, fs, 300), 2)) / tone (L, fs, 100);
+                check ("defaults on a -1 dBFS master: gentle colour", thd > 0.0005 && thd < 0.01, "THD %.2f%%", thd * 100.0);
+                resetAll (p); set (p, "mode", (float) mode);
+
+                set (p, "autoGain", 0.0f); set (p, "limiter", 0.0f); set (p, "bloom", 50.0f);
+                run (p, fs, 3.0, sine (fs, 300, 0.5f), L, R);
+                thd = std::sqrt (std::pow (tone (L, fs, 600), 2) + std::pow (tone (L, fs, 900), 2)) / tone (L, fs, 300);
+                check ("dense 50%: musical, not broken", thd < 0.03, "THD %.2f%%", thd * 100.0);
+                resetAll (p); set (p, "mode", (float) mode);
+
+                // highs: dense 100% must not make cymbals/noise much brighter
+                auto hiLo = [&] (float bl)
+                {
+                    set (p, "autoGain", 0.0f); set (p, "limiter", 0.0f); set (p, "bloom", bl);
+                    std::mt19937 rng (6); std::normal_distribution<float> nd (0.0f, 0.15f);
+                    run (p, fs, 2.0, [&] (int, float& l, float& r) { l = r = nd (rng); }, L, R);
+                    float z = 0, lp = 0; double eh = 0, el = 0;
+                    const float aH = std::exp (-2.0f * (float) fl::kPi * 8000.0f / (float) fs), aL = std::exp (-2.0f * (float) fl::kPi * 1000.0f / (float) fs);
+                    for (float x : L) { z = x + aH * (z - x); const float hp = x - z; lp = x + aL * (lp - x); eh += hp * hp; el += lp * lp; }
+                    return 10.0 * std::log10 (eh / el);
+                };
+                const double h0 = hiLo (0.0f), h1 = hiLo (100.0f);
+                check ("dense 100%: highs not harsher (< +2 dB tilt)", h1 - h0 < 2.0, "%+.2f dB", h1 - h0);
                 resetAll (p); set (p, "mode", (float) mode);
             }
 

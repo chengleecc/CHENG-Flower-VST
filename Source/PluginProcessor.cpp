@@ -4,10 +4,11 @@
 namespace
 {
     constexpr int kSub = 32;              // control-rate sub-block
-    constexpr double kLookaheadMs = 1.5;  // Master-mode limiter look-ahead
+    constexpr double kLookaheadMs = 1.5;       // Master-mode limiter look-ahead
+    constexpr double kTrackLookaheadMs = 0.5;  // Track mode: short look-ahead so the limiter never hard-clips
 
     /** "Bold" knob taper: the first half stays fine-grained, the top half accelerates to ~2.2x. */
-    inline float bold (float x) noexcept { return x + 1.2f * x * x * x; }
+    inline float bold (float x) noexcept { return x + 0.4f * x * x * x; }
 }
 
 //==============================================================================
@@ -46,7 +47,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ChengFlowerProcessor::create
     v.push_back (pct ("deharsh", "De-Harsh", 0.0f, 0.0f));
     v.push_back (pct ("width",   "Width",    0.0f, 0.0f));
     v.push_back (pct ("thick",   "Thick",    0.0f, 0.0f));
-    v.push_back (pct ("color",   "Color",    0.0f, 35.0f));
+    v.push_back (pct ("color",   "Color",    0.0f, 15.0f));
     v.push_back (std::make_unique<AudioParameterBool> (ParameterID { "autoGain", 1 }, "Match", false));
     v.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "output", 1 }, "Output", NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f,
                                                         AudioParameterFloatAttributes().withLabel ("dB")));
@@ -72,7 +73,8 @@ bool ChengFlowerProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 
 int ChengFlowerProcessor::latencyFor (int mode) const
 {
-    return mode == MasterMode ? osLatMaster + (int) std::round (kLookaheadMs * 0.001 * fs) : osLatTrack;
+    return mode == MasterMode ? osLatMaster + (int) std::round (kLookaheadMs * 0.001 * fs)
+                              : osLatTrack + (int) std::round (kTrackLookaheadMs * 0.001 * fs);
 }
 
 void ChengFlowerProcessor::updateLatency()
@@ -145,7 +147,7 @@ void ChengFlowerProcessor::switchMode (int newMode)
     osTrack->reset(); osMaster->reset();
     analogTrack.reset(); analogMaster.reset();
     const int osLat = curMode == MasterMode ? osLatMaster : osLatTrack;
-    limiter.setLookahead (curMode == MasterMode ? (int) std::round (kLookaheadMs * 0.001 * fs) : 0);
+    limiter.setLookahead ((int) std::round ((curMode == MasterMode ? kLookaheadMs : kTrackLookaheadMs) * 0.001 * fs));
     for (int c = 0; c < 2; ++c)
     {
         dryMix[c].reset(); dryMix[c].setDelay (osLat);
